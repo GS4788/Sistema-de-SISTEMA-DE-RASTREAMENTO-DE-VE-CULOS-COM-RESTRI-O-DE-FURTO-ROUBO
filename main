@@ -1,0 +1,306 @@
+import cv2
+import torch
+import easyocr
+import os
+import csv
+from datetime import datetime
+import string
+from ultralytics import YOLO
+
+# Verificar se PyTorch foi instalado com suporte a CUDA
+print("CUDA disponível:", torch.cuda.is_available())
+
+# Inicializar o leitor do EasyOCR em português, inglês e espanhol
+
+reader = easyocr.Reader(["pt", "en", "es"])
+
+# Variável para ativar/desativar a gravação de vídeo
+gravar_video = False  # Defina para True para ativar a gravação, ou False para desativar
+
+numero_do_video = 1 # Defina entre 1, 2 o 3, conforme o experimento desejado
+
+
+# Dicionários de mapeamento para conversão de caracteres
+dict_char_to_int = {'O': '0', 'I': '1', 'Z': '2', 'J': '3', 'A': '4', 'S': '5', 'G': '6', 'T': '7', 'B': '8'}
+dict_int_to_char = {'0': 'O', '1': 'I', '2': 'Z', '3': 'J', '4': 'A', '5': 'S', '6': 'G', '7': 'T', '8': 'B'}
+
+
+
+def license_complies_format(text):
+    """ Verifica se o texto da placa está no formato correto. """
+    if len(text) != 7:
+        return False
+    if numero_do_video == 1 or numero_do_video == 2:
+        A = (
+            # layout brasileiro
+            (text[0] in string.ascii_uppercase or text[0] in dict_int_to_char.keys()) and
+            (text[1] in string.ascii_uppercase or text[1] in dict_int_to_char.keys()) and
+            (text[2] in string.ascii_uppercase or text[2] in dict_int_to_char.keys()) and
+            (text[3] in string.digits or text[3] in dict_char_to_int.keys()) and
+            (text[4] in string.ascii_uppercase or text[4] in string.digits) and
+            (text[5] in string.digits or text[5] in dict_char_to_int.keys()) and
+            (text[6] in string.digits or text[6] in dict_char_to_int.keys())
+        )
+    else:
+        A = (
+            # layout europeu
+            (text[0] in string.ascii_uppercase or text[0] in dict_int_to_char.keys()) and
+            (text[1] in string.ascii_uppercase or text[1] in dict_int_to_char.keys()) and
+            (text[2] in string.digits or text[2] in dict_char_to_int.keys()) and
+            (text[3] in string.digits or text[3] in dict_char_to_int.keys()) and
+            (text[4] in string.ascii_uppercase or text[4] in dict_int_to_char.keys()) and
+            (text[5] in string.ascii_uppercase or text[5] in dict_int_to_char.keys()) and
+            (text[6] in string.ascii_uppercase or text[6] in dict_int_to_char.keys())
+        )
+
+    return A
+
+def format_license(text):
+    """ Formata o texto da placa convertendo caracteres usando os dicionários de mapeamento. """
+    license_plate_ = ''
+
+    if numero_do_video == 1 or numero_do_video == 2:
+        mapping = {
+            # layout brasileiro
+            0: dict_int_to_char, 1: dict_int_to_char, 2: dict_int_to_char, 3: dict_char_to_int,
+            4: dict_int_to_char and dict_char_to_int, 5: dict_char_to_int, 6: dict_char_to_int
+        }
+    else:
+        mapping = {
+            # layout europeu
+            0: dict_int_to_char, 1: dict_int_to_char, 2: dict_char_to_int, 3: dict_char_to_int,
+            4: dict_int_to_char, 5: dict_int_to_char, 6: dict_int_to_char
+        }
+
+    for j in range(7):
+        if text[j] in mapping[j].keys():
+            license_plate_ += mapping[j][text[j]]
+        else:
+            license_plate_ += text[j]
+    return license_plate_
+
+def processar_ocr_da_placa(license_plate_crop):
+    """ Lê o texto da placa a partir da imagem recortada e o formata. """
+    detections = reader.readtext(license_plate_crop)
+    for detection in detections:
+        _, text, score = detection
+        text = text.upper().replace(' ', '')
+        if license_complies_format(text):
+            return format_license(text), score
+    return None, None
+
+def load_plate_restrictions(csv_path):
+    """ Carrega as placas e suas restrições de um arquivo CSV. """
+    plate_restrictions = {}
+    with open(csv_path, mode='r', encoding='utf-8') as file:
+        csv_reader = csv.reader(file)
+        next(csv_reader)  # Pular o cabeçalho
+        for row in csv_reader:
+            plate, restriction = row
+            plate_restrictions[plate.strip()] = restriction.strip().lower() == 'sim'
+    return plate_restrictions
+
+def sinalizar_restricao(frame, text, px1, py1, px2, py2):
+    """ Sinaliza a placa com restrição na tela e desenha uma seta apontando para ela. """
+    height, width, _ = frame.shape
+    # Desenha o texto de restrição
+    cv2.putText(frame, f'Restricao: {text}', (width // 4, height // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 4)
+
+    # Calcula o ponto médio da caixa da placa
+    mid_x = (px1 + px2) // 2
+    mid_y = (py1 + py2) // 2
+
+    # Ponto de origem da seta (centro da imagem)
+    center_x = width // 2
+    center_y = height // 2
+
+    # Desenha uma seta do centro da imagem até a caixa delimitadora da placa
+    cv2.arrowedLine(frame, (center_x, center_y + 20), (mid_x - 55, mid_y - 30), (0, 0, 255), 2, tipLength=0.3)
+
+# Carregar os modelos YOLO pré-treinados
+model_vehicle = YOLO('yolo11n.pt').to('cuda')
+model_plate1 = YOLO("runs/detect/train/weights/best.pt").to('cuda')
+model_plate2 = YOLO("runs/detect/train2/weights/best.pt").to('cuda')
+
+# Classes de veículos de interesse
+vehicle_classes = [2, 3, 5, 7]  # Somente Carro, Moto, Ônibus e Caminhão
+
+if numero_do_video == 1 or numero_do_video == 2:
+    # Parâmetros para filtrar veículos próximos
+    MIN_BOX_AREA = 45000
+else:
+    # Parâmetros para filtrar veículos próximos
+    MIN_BOX_AREA = 20000
+
+# Criar diretório para salvar resultados
+exec_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_dir = f"placas_detectadas_{exec_time}"
+os.makedirs(output_dir, exist_ok=True)
+
+# Definir caminho do arquivo de log para registrar as placas detectadas
+log_file_path = os.path.join(output_dir, "registro_placas.txt")
+
+# Inicializar o conjunto para armazenar placas já registradas
+placas_registradas = set()
+
+# Carregar as restrições de placas
+restricao_placas = load_plate_restrictions('restricoes_placas.csv')
+
+def registrar_placa(placa, tempo, image, score):
+    """ Registro da placa com modelo, confiança e tempo """
+    if placa not in placas_registradas:
+        with open(log_file_path, "a") as log_file:
+            log_file.write(f"{tempo} - {placa} - Confiança: {score:.2f}\n")
+        placas_registradas.add(placa)
+        cv2.imwrite(os.path.join(output_dir, f"{placa}.png"), image)
+
+def formatar_tempo(segundos):
+    horas = int(segundos // 3600)
+    minutos = int((segundos % 3600) // 60)
+    segundos = int(segundos % 60)
+    return f"{horas:02}:{minutos:02}:{segundos:02}"
+
+def detectar_veiculos(frame):
+    results = model_vehicle(frame)
+    det_filtradas = []
+    for result in results:
+        boxes = result.boxes
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+            conf = box.conf[0].item()
+            cls = int(box.cls[0].item())
+            box_area = (x2 - x1) * (y2 - y1)
+            if conf > 0.65 and cls in vehicle_classes and box_area > MIN_BOX_AREA:
+                det_filtradas.append([x1, y1, x2, y2, conf, cls, box_area])
+    det_filtradas.sort(key=lambda x: x[6], reverse=True)
+    return det_filtradas[:2]
+
+def processar_video(video_path):
+    cap = cv2.VideoCapture(video_path)
+    frame_count = 0
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_delay = int(1000 / original_fps)
+
+    out = None
+    if gravar_video:
+        # Configurar para gravação de vídeo
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        output_video_path = os.path.join(output_dir, 'saida_processada.mp4')
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_count += 1
+        tempo_video = frame_count / original_fps
+        tempo_formatado = formatar_tempo(tempo_video)
+
+        height, width, _ = frame.shape
+        if gravar_video and out is None:
+            # Inicializa o VideoWriter com o tamanho do frame da captura
+            out = cv2.VideoWriter(output_video_path, fourcc, original_fps, (width, height))
+
+        new_width, new_height = width, height
+        frame_resized = cv2.resize(frame, (new_width, new_height))
+
+        if numero_do_video == 1 or numero_do_video == 2:
+            # parâmetros para vídeos 1 e 2
+            top_crop = int(new_height * 0.3)
+            bottom_crop = int(new_height * 0.77)
+            center_left = int(new_width * 0.10)
+            center_right = int(new_width * 1)
+            X = 0.2
+
+        else:
+            # parâmetros para o vídeo 3
+            top_crop = int(new_height * 0.4)
+            bottom_crop = int(new_height * 1)
+            center_left = int(new_width * 0.2)
+            center_right = int(new_width * 0.8)
+            X = 0.1
+
+        region_of_interest = frame_resized[top_crop:bottom_crop, center_left:center_right]
+        # cv2.imshow('Region of Interest', region_of_interest)
+
+        resultados = detectar_veiculos(region_of_interest)
+
+        for x1, y1, x2, y2, conf, cls, _ in resultados:
+            y1 += top_crop
+            y2 += top_crop
+            x1 += center_left
+            x2 += center_left
+
+            if x1 < x2 and y1 < y2:
+                width_expand = int((x2 - x1) * X)
+                height_expand = int((y2 - y1) * 0.1)
+
+                x1 = max(0, x1 - width_expand)
+                y1 = max(0, y1 - height_expand)
+                x2 = min(frame.shape[1], x2 + width_expand)
+                y2 = min(frame.shape[0], y2 + height_expand)
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                vehicle_patch = frame[y1:y2, x1:x2]
+                # cv2.imshow('Vehicle Detected', vehicle_patch)
+
+                results1 = model_plate1(vehicle_patch)
+                results2 = model_plate2(vehicle_patch)
+                results = results1 + results2
+
+                for idx, result in enumerate(results):
+                    for box in result.boxes:
+                        bbox = box.xyxy[0].tolist()
+                        confidence = box.conf[0].item()
+                        label = box.cls[0].item()
+
+                        if label == 641:
+                            px1, py1, px2, py2 = map(int, bbox)
+                            px1 += x1
+                            py1 += y1
+                            px2 += x1
+                            py2 += y1
+
+                            px1 = max(0, px1)
+                            px2 = min(frame.shape[1], px2)
+                            py1 = max(0, py1)
+                            py2 = min(frame.shape[0], py2)
+
+                            cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 255, 0), 2)
+
+                            plate_patch = frame_resized[py1:py2, px1:px2]
+
+                            if plate_patch.size > 0:
+                                scale_factor = 2
+                                new_size = (int(plate_patch.shape[1] * scale_factor), int(plate_patch.shape[0] * scale_factor))
+                                plate_patch_resized = cv2.resize(plate_patch, new_size, interpolation=cv2.INTER_CUBIC)
+
+                                rgb_plate_patch = cv2.cvtColor(plate_patch_resized, cv2.COLOR_BGR2RGB)
+                                text, score = processar_ocr_da_placa(rgb_plate_patch)
+                                if text:
+                                    registrar_placa(text, tempo_formatado, plate_patch_resized, score)
+
+                                    # Verifica se a placa tem restrição
+                                    if text in restricao_placas and restricao_placas[text]:
+                                        sinalizar_restricao(frame, text, px1, py1, px2, py2)
+
+                                # cv2.imshow('Plate Detected', rgb_plate_patch)
+
+        # Gravar o quadro processado no arquivo de saída de vídeo
+        if gravar_video and out is not None:
+            out.write(frame)
+
+        cv2.imshow('Video', frame)
+
+        if cv2.waitKey(frame_delay) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    if gravar_video and out is not None:
+        out.release()
+    cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    caminho_do_video = f"/home/joaomatta/Vídeos/video-tcc-{numero_do_video}.mp4"
+    processar_video(caminho_do_video)
