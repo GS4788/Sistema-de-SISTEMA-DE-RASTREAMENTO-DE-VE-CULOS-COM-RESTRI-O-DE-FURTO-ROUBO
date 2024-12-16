@@ -1,4 +1,4 @@
-# DESENVOLVIMENTO DE UM SISTEMA DE RASTREAMENTO DE VEÍCULOS COM RESTRIÇÃO DE FURTO/ROUBO BASEADO EM VISÃO COMPUTACIONAL
+# DESENVOLVIMENTO DE UM SISTEMA DE IDENTIFICAÇÃO DE VEÍCULOS COM RESTRIÇÃO DE FURTO OU ROUBO BASEADO EM VISÃO COMPUTACIONAL
 
 Repositório do Trabalho de Conclusão de Curso (TCC)
 
@@ -6,10 +6,11 @@ Bem-vindo ao repositório oficial do meu Trabalho de Conclusão de Curso (TCC). 
 
 Descrição do Projeto
 
-O objetivo deste projeto é desenvolver um SISTEMA DE RASTREAMENTO DE VEÍCULOS COM RESTRIÇÃO DE FURTO/ROUBO BASEADO EM VISÃO COMPUTACIONAL. O projeto envolve utilização de modelos YOLO e a biblioteca EasyOCR.
-Estrutura do Repositório
+O objetivo deste projeto é desenvolver um SISTEMA DE IDENTIFICAÇÃO DE VEÍCULOS COM RESTRIÇÃO DE FURTO OU ROUBO BASEADO EM VISÃO COMPUTACIONAL. O projeto envolve utilização de modelos YOLO e a biblioteca EasyOCR.
 
- 
+Vídeo Resumido
+
+Assista em: <https://youtu.be/YJpdEH8vA5I>
 
 Contribuições
 
